@@ -39,9 +39,9 @@ public class Estimator implements PlanVisitor {
 		Relation output = new Relation(input.getTupleCount());
 		
 		for(Attribute a : op.getAttributes()) {
-			// See if that attribute is in relation, if it is add it to output relation
+			// See if that attribute is in relation + add it to output relation
 			for(Attribute aInInput : input.getAttributes()) {
-				if(a.getName() == aInInput.getName()) {
+				if(a.getName().equals(aInInput.getName())) {
 					output.addAttribute(aInInput);
 				}
 			}
@@ -56,38 +56,45 @@ public class Estimator implements PlanVisitor {
 		
 		// See if predicate is attr=value
 		if(op.getPredicate().equalsValue()) {
-			// Create an output relation with 1 attribute
-			Relation output = new Relation(1);
+			// Get attribute on previous operator
+			int valueCount = op.getInput().getOutput().getAttribute(op.getPredicate().getLeftAttribute()).getValueCount();
 			
-			// Set the output relation to a relation containing only the attributes that has that vlaue (name?)
+			// Create an output relation with no. of tuples in R over no. of value in attr a in R
+			Relation output = new Relation(op.getInput().getOutput().getTupleCount()/valueCount);
+			
+			// Set predicate value count to 1, others just add as is
 			for(Attribute a : op.getInput().getOutput().getAttributes()) {
-				if(a.getName() == op.getPredicate().getRightValue()) {
+				if(a.getName() == op.getPredicate().getLeftAttribute().getName()) {
+					Attribute attr = new Attribute(a.getName(), 1);
+					output.addAttribute(attr);
+				} else {
 					output.addAttribute(a);
-					break;
 				}
 			}
 			op.setOutput(output);
 		} else {
-			// attr = attr
+			// attr = attr			
+			int valueCountMax = Math.max(op.getInput().getOutput().getAttribute(op.getPredicate().getLeftAttribute()).getValueCount(),
+					op.getInput().getOutput().getAttribute(op.getPredicate().getRightAttribute()).getValueCount());
+			Relation output = new Relation(op.getInput().getOutput().getTupleCount()/valueCountMax);
 			
-			// Find attributes in relation with same name
-			Attribute firstAttr = new Attribute("NO ATTR");
-			Attribute secondAttr = new Attribute("NO ATTR");
-			// getAttribute won't work as it uses the object ref. and they would have different object refs as 2 seperate objects
+			// Add attributes to output relation
 			for(Attribute a : op.getInput().getOutput().getAttributes()) {
-				if(op.getPredicate().getLeftAttribute().getName() == a.getName()) {
-					firstAttr = a;
+				if(op.getInput().getOutput().getAttribute(op.getPredicate().getRightAttribute()).getName().equals(a.getName()) 
+						|| op.getInput().getOutput().getAttribute(op.getPredicate().getLeftAttribute()).getName().equals(a.getName())) {
+					Attribute newA = new Attribute(
+							a.getName(), Math.min(op.getInput().getOutput().getAttribute(op.getPredicate().getLeftAttribute()).getValueCount(), 
+									op.getInput().getOutput().getAttribute(op.getPredicate().getRightAttribute()).getValueCount()));
+					output.addAttribute(newA);
+				} else {
+					// If value count less than tuple count add it in, otherwsie adjust value count
+					if(a.getValueCount() > op.getInput().getOutput().getTupleCount()) {
+						Attribute newA = new Attribute(a.getName(), op.getInput().getOutput().getTupleCount());
+						output.addAttribute(newA);
+					} else {
+						output.addAttribute(a);
+					}
 				}
-				if(op.getPredicate().getRightAttribute().getName() == a.getName()) {
-					secondAttr = a;
-				}
-			}
-			// If an attribute hasn't been found set output to blank relation otherwise check value count
-			Relation output = new Relation(Math.min(firstAttr.getValueCount(), secondAttr.getValueCount()));
-			if(firstAttr.getValueCount() == secondAttr.getValueCount() && 
-				(firstAttr.getName() == "NO ATTR" || secondAttr.getName() == "NO ATTR")) {
-				output.addAttribute(secondAttr);
-				output.addAttribute(firstAttr);
 			}
 			op.setOutput(output);
 		}
@@ -95,7 +102,7 @@ public class Estimator implements PlanVisitor {
 	
 	public void visit(Product op) {
 		// Output relation is size of total tuples in both relations
-		Relation output = new Relation(op.getLeft().getOutput().getTupleCount() + op.getRight().getOutput().getTupleCount());
+		Relation output = new Relation(op.getLeft().getOutput().getTupleCount() * op.getRight().getOutput().getTupleCount());
 		
 		// Output is the cartesian product of the two relations
 		for(Attribute a : op.getLeft().getOutput().getAttributes()) {
@@ -108,17 +115,41 @@ public class Estimator implements PlanVisitor {
 	}
 	
 	public void visit(Join op) {
-		// Output relation is minimum size of either tuples in a and tuples in b
+		// Output value is minimum size of either tuples in a and tuples in b
 		int attrCountA = op.getLeft().getOutput().getAttribute(op.getPredicate().getLeftAttribute()).getValueCount();
 		int attrCountB = op.getRight().getOutput().getAttribute(op.getPredicate().getRightAttribute()).getValueCount();
-		Relation output = new Relation(Math.min(attrCountA, attrCountB));
+		int values = Math.min(attrCountA, attrCountB);
 		
-		// Add all attributes in both A and B to the output relation
-		for(Attribute a : op.getLeft().getOutput().getAttributes()) {
-			if(op.getRight().getOutput().getAttribute(a) != null) {
-				output.addAttribute(a);
+		// Relation tuple count is total tuples in each relation divided by maximum attr count
+		Relation output = new Relation(op.getLeft().getOutput().getTupleCount()*op.getRight().getOutput().getTupleCount()/
+				Math.max(attrCountA, attrCountB));
+		
+		// Add attributes to output relation
+		output = addAttributes(op.getLeft().getOutput(), op.getPredicate().getLeftAttribute(), values, output);
+		output = addAttributes(op.getRight().getOutput(), op.getPredicate().getRightAttribute(), values, output);
+		
+		op.setOutput(output);
+	}
+	
+	/**
+	 * Add attributes to output for each side of predicate
+	 */
+	public Relation addAttributes(Relation r, Attribute attr, int value, Relation output) {
+		for(Attribute a : r.getAttributes()) {
+			if(r.getAttribute(attr).getName().equals(a.getName())) {
+				Attribute newA = new Attribute(
+						a.getName(), value);
+				output.addAttribute(newA);
+			} else {
+				// If value count less than tuple count add it in, otherwsie adjust value count
+				if(a.getValueCount() > output.getTupleCount()) {
+					Attribute newA = new Attribute(a.getName(), output.getTupleCount());
+					output.addAttribute(newA);
+				} else {
+					output.addAttribute(a);
+				}
 			}
 		}
-		op.setOutput(output);
+		return output;
 	}
 }
